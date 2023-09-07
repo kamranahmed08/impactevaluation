@@ -1,0 +1,232 @@
+---
+title: "Impact Evaluation Coding Sample"
+author: "Kamran Ahmed"
+output:
+  html_document:
+    df_print: paged
+  pdf_document: default
+  word_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(tidyverse)
+library(knitr)
+library(kableExtra)
+library(stargazer)
+library(lfe)
+library(plm)
+```
+
+### Understanding the effects of womens’ representation in politics on economic development
+
+I use a sample data on villages with female leadership from 2001 to 2015 for this analysis. The data include villages that never elected a female leader and villages that elected female leaders between 2005 and 2010. I define a village as "treated" in the year in which it first elects a female leader, and for every period thereafter. The data include variables village id, year, gross village product and female election year.
+
+```{r}
+df <- read.csv("sample_data.csv")
+head(df)
+```
+
+a simple comparison of average economic productivity between villages with and without a female leader.
+```{r results='asis', warning=FALSE}
+# Simple regression
+df %>% 
+  mutate(has_fem_leader = ifelse(!is.na(female_election_year), 1, 0)) %>% 
+  lm(gross_village_product ~ has_fem_leader, data = .) %>% 
+  stargazer(., header = FALSE, type = "text")
+```
+
+Villages with female leadership appear to have higher GVP on average (11,660, and statistically significant) than those without female leadership. 
+
+Now I use regression to perform a time-series (i.e, pre vs. post) analysis of the effect of female leaders on economic productivity, using only villages who elected women in 2010.
+```{r reg, results = "asis", warning=FALSE}
+df_2010 <- df %>% 
+  filter(female_election_year == "2010") %>%
+  mutate(year_as_factor = as.factor(year),
+         post = ifelse(year >= 2010, 1, 0))
+
+stargazer(lm(gross_village_product ~ post, data = df_2010), header = FALSE, 
+          type = "text")
+```
+
+I plot average GVP over time for villages that elected women in 2010. I also plot average pre-treatment and average post-treatment GVP on the same plot.
+```{r plot}
+
+# create mean GVP data for 2010 election villages 
+df_2010_summary <- df_2010 %>% 
+  group_by(year) %>% 
+  summarize(mean_gvp = mean(gross_village_product)) %>% 
+  ungroup()
+
+# get averages for plot
+mean_gvp_pre_2010 <- mean(df_2010$gross_village_product[df_2010$post ==0])
+mean_gvp_post_2010 <- mean(df_2010$gross_village_product[df_2010$post ==1])
+
+
+# make plot
+  ggplot(df_2010_summary,
+         aes(x = year, y = mean_gvp)) +
+  geom_point() +
+  geom_line() +
+  geom_segment(aes(x = 2001,  xend = 2010, y = mean_gvp_pre_2010, yend = mean_gvp_pre_2010), data = NULL, linetype = 2) +
+  geom_segment(aes(x = 2010, xend = 2015,  y = mean_gvp_post_2010, yend = mean_gvp_post_2010), data = NULL, linetype = 2) +
+  annotate("text", x = 2004, y = mean_gvp_pre_2010 + 5000, label = "Avg GVP for All 2010-treated Villages \nPre-2010", size = 2) +
+  annotate("text", x = 2011, y = mean_gvp_post_2010 + 5000, label = "Avg GVP for All 2010-treated Villages \nPost-2010", size = 2) +
+  scale_x_continuous(breaks = seq(2001, 2015, 1))
+```
+
+We can see that GVP between pre-2010 (pre-female leader) and post-2010 (female leader) years increases by 64,259. The increase in GVP is quite large directly following the female leadership election.
+In the plot of average GVP over time for villages that elected women in 2010, we see the same substantial jump in GVP directly between 2009 and 2010, which corroborates the above observation. If we take the difference of `mean_gvp_post_2010` and `mean_gvp_pre_2010`, we get $64,258.74$, which is the same magnitude as our regression estimate of the treatment effect.
+
+Now we plot average economic productivity against time for villages that never elected a female leader and assess the viability of using these villages as a control group for the villages that elected a woman in 2010 and then we assess the viability of using the male-leader-only villages as a control group for the 2005 female leader villages.
+
+```{r, warning=FALSE}
+df %>% 
+  filter(is.na(female_election_year) | female_election_year == "2010") %>% 
+  group_by(year, female_election_year) %>%
+  summarize(mean_gvp = mean(gross_village_product),
+            .groups = "keep") %>% 
+  ggplot(aes(year, mean_gvp,
+             color = factor(female_election_year))) +
+  geom_point() + 
+  geom_line() +
+  geom_vline(aes(xintercept = 2010), linetype = 2) +
+  scale_x_continuous(breaks=seq(2001, 2015, 1)) +
+  theme(legend.position="bottom")
+```
+
+Villages that never elected a female leader are probably not a good control for 2010-treated villages. Through the graph, we can see that GVP was increasing in villages before treatment in 2010, and the slope is very different from the constant trend in the never-treated villages' GVP. This could indicate that trends in GVP post-treatment also wouldn't be parallel, in the absence of treatment.
+
+```{r, warning=FALSE}
+df %>% 
+  filter(is.na(female_election_year) | female_election_year == "2005") %>% 
+  group_by(year, female_election_year) %>%
+  summarize(mean_gvp = mean(gross_village_product),
+            .groups = "keep") %>% 
+  ggplot(aes(year, mean_gvp,
+             color = factor(female_election_year))) +
+  geom_point() + 
+  geom_line() +
+  geom_vline(aes(xintercept = 2005), linetype = 2) +
+  scale_x_continuous(breaks=seq(2001, 2015, 1)) +
+  theme(legend.position="bottom")
+```
+
+Here, we see that the pre-treatment trends for never-treated villages and 2005-treated villages are very similar. That may mean that never-treated villages may be a viable counter-factual for this particular set of treated villages. 
+
+Using just the male-leader-only villages and the 2005 female-electing villages, we estimate the causal impact of a female leader on economic productivity. First, we find a simple difference in means (rather than regression). Next, we use a simple regression (no fixed effects) and finally, fixed effects to control for common time shocks and time-invariant village characteristics
+
+```{r}
+df_2005 <- df %>% 
+  filter(female_election_year == 2005|is.na(female_election_year)) %>% 
+  mutate(D = case_when(female_election_year == 2005 & year >= 2005 ~ 1,
+                       female_election_year == 2005 & year < 2005 ~ 0,
+                       is.na(female_election_year) ~ 0,
+                       TRUE ~ as.numeric(NA)),
+         treat = ifelse(is.na(female_election_year), 0, 1),
+         post = ifelse(year >= 2005, 1, 0))
+```
+
+
+```{r mean diff}
+# simple comparison - DID
+use.tab <- df_2005 %>%
+  group_by(treat, post) %>%
+  summarize(mean.use = mean(gross_village_product),
+            .groups = "keep")
+use.tab %>% 
+  kable()
+```
+
+```{r}
+# Calculate difference in difference (simple means)
+(use.tab$mean.use[4] - use.tab$mean.use[3]) - 
+  (use.tab$mean.use[2] - use.tab$mean.use[1])
+```
+
+The impact of female leadership on gross village product, estimated by simply claculating the difference of means, is $6,826$.
+
+```{r simple regression, results = "asis"}
+# Regression without fixed effects - both methods are equivalent
+reg1 <- felm(gross_village_product ~ treat * post + treat + post|0|0|village_id, data = df_2005)
+reg2 <- felm(gross_village_product ~ D + treat + post|0|0|village_id, data = df_2005)
+stargazer(reg1, reg2, type = "text", header = FALSE)
+```
+
+The simple DiD regression yields a significant coefficient of $6,826$. The estimate is a identical to the one we got from the simple difference in difference calculation, which is what we expect, since both methods calculate averages similarly.
+
+```{r fixed effects, results = "asis", warning=FALSE}
+# Regression with individual and time fixed effects
+fe_only <- felm(gross_village_product ~ D|village_id + year, data = df_2005)          
+fe_cluster <- felm(gross_village_product ~ D|village_id + year|0|village_id, data = df_2005)          
+
+stargazer(fe_only, fe_cluster, type = "text", keep = "D", header = FALSE)
+```
+
+Including both the individual and the time fixed effects in the model, we find equivalent estimates of the treatment effects compared to the simple DiD regression. This result, obtained from using the 2005-treated and the never-treated data, is smaller compared to the result from simple comparison of average economic productivity between villages with and without a female leader. This is potentially becasue the never-treated villages and the 2010-treated villages are fundamentally different (even in trends), thus make for a bad comparison. Because they were essentially diverging, as we saw in the graph earlier, the gap between those two groups would likely be larger in the post-treatment time period as well, even absent the female leadership.
+
+Now we plot average economic productivity over time, separately (but on the same graph) for villages that elected a female leader in each of the years from 2005 to 2010.
+
+```{r}
+df %>%
+  group_by(female_election_year, year) %>%
+  summarize(mean_gvp = mean(gross_village_product),
+            .groups = "keep") %>%
+  ggplot(aes(x = year, y = mean_gvp, color = as.factor(female_election_year))) + 
+  geom_point() +
+  geom_line() +
+  scale_x_continuous(breaks = seq(2001, 2015, 1)) 
+```
+
+We can see clearly from this plot, that the villages who elected female leadership in 2010 have shown a divergent pattern of GVP from other villages, and from the never-treated group (those villages that never elected female leadership). Therefore, they don't form a fair comparison group, and common time fixed effect assumptions are likely to fail. Therefore, we drop these villages in our analysis and use the remaining villages to estimate a panel fixed effects regression to identify the causal effect of female leadership on economic productivity.
+
+```{r fixed, results = "asis", warning=FALSE}
+df_es <- df %>% 
+  filter(female_election_year != 2010|is.na(female_election_year)) %>% 
+  mutate(D = case_when(!is.na(female_election_year) & year >= female_election_year ~ 1,
+                       !is.na(female_election_year) & year < female_election_year ~ 0,
+                       is.na(female_election_year) ~ 0,
+                       TRUE ~ as.numeric(NA)))
+
+fix <- felm(gross_village_product ~ D|village_id + year|0|village_id, data = df_es)
+stargazer(fix, header = FALSE, type = "text")
+          
+```
+
+
+Here we see treatment effects are positive after election, indicating that the election of the female leadership increased GVP. We see that treatment effects increase over time.
+
+Now we use an event study regression to estimate how the treatment effect varies over time and plot the resulting event study point estimates and 95 percent confidence intervals to describe how the treatment effect varies over time.
+```{r event study, results = "asis", warning=FALSE}
+df_es <-
+  df_es %>% 
+  mutate(ever_treated = case_when(!is.na(female_election_year) ~ 1,
+                                  is.na(female_election_year) ~ 0,
+                                  TRUE ~ as.numeric(NA)),
+         event_time = ifelse(!is.na(female_election_year), year - female_election_year, 0),
+         D = factor(ever_treated * event_time),
+         D = relevel(D, ref = "-1"))
+
+es <- felm(gross_village_product ~ D|village_id + year|0|village_id, data = df_es)
+stargazer(es, type = "text", header = FALSE, single.row = TRUE)
+```
+
+```{r event_study_plot}
+res <- as.data.frame(summary(es)$coefficients)
+res$low <- res$Estimate - qnorm(1 - 0.05/2)*res$`Cluster s.e.`
+res$high <- res$Estimate + qnorm(1 - 0.05/2)*res$`Cluster s.e.`
+res$event_time_value <- c(-8:-2, 0:10)
+
+res %>%
+  ggplot(aes(x = event_time_value, y = Estimate)) + 
+  geom_point() +
+  geom_line() +
+  geom_ribbon(aes(ymin = low, ymax = high), fill = "blue", alpha = .5) +
+  scale_x_continuous(breaks = res$event_time_value)
+```
+
+We can see that the pre-trend is quite constant in negative event time, which is promising becasue it means that the GVP trends were not that different between the never and ever-treated groups before the ever-treated groups were treated. In the post-trends, we see that the GVP is increasing in the years following the female leadership.
+
+From the results above ,the event study regression is potentially the most useful. First, the estimate has dropped set of villages who elected female leadership in 2010, which appear to be trending differently, and includes only the sets of villages that appear to be trending similarly over time. Compared to the 2005-treated regression, the sample is larger because we allowing treatments to happen at different points in time. 
+One possible shortcoming with this event study design is bundled treatments - it may be the case that the female leadership election, even for the various cohorts that were treated in different years, coincides with other economic or policy reforms that would also influence GVP. 
